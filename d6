@@ -6,7 +6,7 @@ usage: d6 <spec> <tool> <format> <dsn-token> [options]
    or: d6 --help
 
 Arguments:
-  <spec>        mongo | { redshift | postgres } | heroku | mssql | bypass
+  <spec>        mongo | { redshift | postgres } | heroku | mssql | redis | bypass
   <tool>        shell | uri
   <format>      Use case:               Description:
     -           redshift shell -        Default output format
@@ -89,6 +89,12 @@ case $SPEC in
     esac
     ;;
   "mssql")
+    ;;
+  "redis")
+    case "$FORMAT" in
+      - | -- | default) ;;
+      *) error "'$FORMAT' format is not supported"; exit 1
+    esac
     ;;
   *) error "'$SPEC' spec is not supported"; exit 1
 esac
@@ -205,5 +211,17 @@ case $SPEC in
       "uri")
         error "$SPEC $TOOL not supported" ;;
     esac
+    ;;
+
+  "redis")
+
+    case $TOOL in
+      "shell")
+        redis-cli -u "redis://${_map[user]}:${_map[password]}@${_map[host]}:${_map[port]}"
+        ;;
+      "uri")
+        error "$SPEC $TOOL not supported" ;;
+    esac
+    ;;
 
 esac
