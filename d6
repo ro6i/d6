@@ -6,7 +6,7 @@ usage: d6 <spec> <tool> <format> <dsn-token> [options]
    or: d6 --help
 
 Arguments:
-  <spec>        mongo | { redshift | postgres } | heroku | mssql | redis | bypass
+  <spec>        mongo | { redshift | postgres } | heroku | mssql | redis | cassandra | bypass
   <tool>        shell | uri
   <format>      Use case:               Description:
     -           redshift shell -        Default output format
@@ -43,9 +43,9 @@ _rc_path="$HOME/.config/d6/rc.conf.yml"
 _dsn_conf_dir="$HOME"
 if [[ -f "$_rc_path" ]]
 then
-  _dsn_conf_dir=$(cat "$_rc_path" | yq r - 'dsn-conf-dir')
+  _dsn_conf_dir=$(yq e '.dsn-conf-dir' "$_rc_path")
 fi
-_dsn_conf_path="${_dsn_conf_dir/#\~/$HOME}/.dsn.conf.yml"
+_dsn_conf_path="${_dsn_conf_dir}/.dsn.conf.yml"
 if [[ ! -f "$_dsn_conf_path" ]]
 then
   error "Cannot find configuration file $_dsn_conf_path"; exit 1
@@ -96,6 +96,12 @@ case $SPEC in
       *) error "'$FORMAT' format is not supported"; exit 1
     esac
     ;;
+  "cassandra")
+    case "$FORMAT" in
+      - | -- | default) ;;
+      *) error "'$FORMAT' format is not supported"; exit 1
+    esac
+    ;;
   *) error "'$SPEC' spec is not supported"; exit 1
 esac
 case $TOOL in
@@ -109,7 +115,7 @@ _scope="${SPEC^^}"
 declare -A _map
 for FIELD in host port database username password app
 do
-  _map[$FIELD]=$(cat "$_dsn_conf_path" | yq r - "$_scope.$NAME.$FIELD")
+  _map[$FIELD]=$(yq e ".$_scope.$NAME.$FIELD" "$_dsn_conf_path")
 done
 
 # read all the optional arguments
@@ -217,11 +223,21 @@ case $SPEC in
 
     case $TOOL in
       "shell")
-        redis-cli -u "redis://${_map[user]}:${_map[password]}@${_map[host]}:${_map[port]}"
+        redis-cli -u "redis://${_map[username]}:${_map[password]}@${_map[host]}:${_map[port]}"
         ;;
       "uri")
         error "$SPEC $TOOL not supported" ;;
     esac
     ;;
 
+  "cassandra")
+
+    case $TOOL in
+      "shell")
+        cqlsh -u "${_map[username]}" -p "${_map[password]}" "${_map[host]}" "${_map[port]}"
+        ;;
+      "uri")
+        error "$SPEC $TOOL not supported" ;;
+    esac
+    ;;
 esac
