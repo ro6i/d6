@@ -14,11 +14,12 @@ Arguments:
   <dsn-token>   token from DSN conf
 
 Options (DSN overrides):
-  --host        overrides 'host'
-  --port        overrides 'port'
-  --database    overrides 'database'
-  --username    overrides 'username'
-  --password    overrides 'password'
+  --host                  overrides 'host'
+  --port                  overrides 'port'
+  --database              overrides 'database'
+  --username              overrides 'username'
+  --password              overrides 'password'
+  --connect-timeout    overrides 'connect-timeout'
 
 EOF
 }
@@ -113,7 +114,7 @@ _scope="${SPEC^^}"
 
 # read database connection attributes into a map
 declare -A _map
-for FIELD in host port database username password app
+for FIELD in host port database username password app connect-timeout
 do
   _map[$FIELD]=$(yq e ".$_scope.$NAME.$FIELD" "$_dsn_conf_path")
 done
@@ -148,6 +149,8 @@ then
     fi
   done
 fi
+
+_start_time="$(date -u +%s)"
 
 case $SPEC in
   "bypass")
@@ -234,10 +237,15 @@ case $SPEC in
 
     case $TOOL in
       "shell")
-        cqlsh -u "${_map[username]}" -p "${_map[password]}" "${_map[host]}" "${_map[port]}"
+        cqlsh -u "${_map[username]}" -p "${_map[password]}" --connect-timeout="${_map['connect_timeout']:-10}" "${_map[host]}" "${_map[port]}"
         ;;
       "uri")
         error "$SPEC $TOOL not supported" ;;
     esac
     ;;
 esac
+
+_end_time="$(date -u +%s)"
+
+_elapsed="$(($_end_time-$_start_time))"
+>&2 echo "[$_elapsed second(s)]"
