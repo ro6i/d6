@@ -1,25 +1,25 @@
-#!/usr/local/bin/bash
+#!/bin/bash
 
 function help {
 cat <<'EOF'
-usage: d6 <spec> <tool> <format> <dsn-token> [options]
+usage: d6 <spec> <tool> <dsn-token> [options]
    or: d6 --help
 
 Arguments:
   <spec>        mongo | { redshift | postgres } | heroku | mssql | redis | cassandra | bypass
   <tool>        shell | uri
-  <format>      Use case:               Description:
-    -           redshift shell -        Default output format
-    csv         redshift shell csv      Hints the tool to output the data in CSV format
   <dsn-token>   token from DSN conf
 
 Options (DSN overrides):
+  --format                Format in which the output is presented
+
   --host                  overrides 'host'
   --port                  overrides 'port'
   --database              overrides 'database'
   --username              overrides 'username'
   --password              overrides 'password'
-  --connect-timeout    overrides 'connect-timeout'
+  --secure-bundle         overrides 'secure-bundle'
+  --connect-timeout       overrides 'connect-timeout'
 
 EOF
 }
@@ -58,10 +58,32 @@ SPEC="$1"; shift
 # shell - runs a cli shell/tool for the dbms specified by $SPEC
 # uri - outputs connection strings in a format specified by $FORMAT
 TOOL="$1"; shift
-# format of the output (processing details)
-FORMAT="$1"; shift
+FORMAT='-'
 # name of the token to read the connection attributes from
 NAME="$1"; shift
+
+# read all the optional arguments
+ARGS=`getopt --name 'database-tool' --options 'asc' --longoptions database: -- "$@"`
+eval set -- "$ARGS"
+
+# parameters can be overridden
+while true
+do
+  case "$1" in
+    --database)
+        case "$2" in
+          "") shift 2 ;;
+          *) _map[database]="$2"; shift 2 ;;
+        esac ;;
+    --format)
+        case "$2" in
+          "") shift 2 ;;
+          *) FORMAT="$2"; shift 2 ;;
+        esac ;;
+    --) shift; break ;;
+    *) echo "error parsing args"; exit 1
+  esac
+done
 
 # validate all positional arguments
 case $SPEC in
@@ -110,31 +132,14 @@ case $TOOL in
   *) error "'$TOOL' is not a valid argument"; exit 1
 esac
 
-_scope="${SPEC^^}"
+_scope="$SPEC"
 
 # read database connection attributes into a map
 declare -A _map
-for FIELD in host port database username password app connect-timeout
+for FIELD in host port database username password app connect-timeout secure-bundle
 do
-  _map[$FIELD]=$(yq e ".$_scope.$NAME.$FIELD" "$_dsn_conf_path")
-done
-
-# read all the optional arguments
-ARGS=`getopt --name 'database-tool' --options 'asc' --longoptions database: -- "$@"`
-eval set -- "$ARGS"
-
-# parameters can be overridden
-while true
-do
-  case "$1" in
-    --database)
-        case "$2" in
-          "") shift 2 ;;
-          *) _map[database]="$2"; shift 2 ;;
-        esac ;;
-    --) shift; break ;;
-    *) echo "error parsing args"; exit 1
-  esac
+  _key="$(echo "$FIELD" | sed 's/-/_/g')"
+  _map[$_key]="$(yq e ".$_scope.$NAME.$FIELD" "$_dsn_conf_path")"
 done
 
 # make sure there is no 'null' value returned by `yq`
@@ -143,7 +148,7 @@ if [[ "${SPEC}" != "bypass" ]]
 then
   for FIELD in database
   do
-    if [[ "${_map[$FIELD]}" == "null" ]]
+    if [[ "${_map[$FIELD]}" == 'null' ]]
     then
       error "$_scope.$NAME.$FIELD must not be 'null'"; exit 1
     fi
@@ -237,7 +242,13 @@ case $SPEC in
 
     case $TOOL in
       "shell")
-        cqlsh -u "${_map[username]}" -p "${_map[password]}" --connect-timeout="${_map['connect_timeout']:-10}" "${_map[host]}" "${_map[port]}"
+        if [[ -z "${_map[secure_bundle]}" ]]
+        then
+          cqlsh -u "${_map[username]}" -p "${_map[password]}" --connect-timeout="${_map[connect_timeout]:-10}" "${_map[host]}" "${_map[port]}"
+        else
+          cqlsh -u "${_map[username]}" -p "${_map[password]}" -b "${_map[secure_bundle]}" --connect-timeout="${_map[connect_timeout]:-10}" --request-timeout=6000 --no-color
+          # echo "cqlsh -u "${_map[username]}" -p "${_map[password]}" -b "${_map[secure_bundle]}" --connect-timeout="${_map[connect_timeout]:-10}" --request-timeout=600 --no-color"
+        fi
         ;;
       "uri")
         error "$SPEC $TOOL not supported" ;;
