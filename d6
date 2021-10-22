@@ -6,8 +6,8 @@ usage: d6 <spec> <tool> <dsn-token> [options]
    or: d6 --help
 
 Arguments:
-  <spec>        mongo | { redshift | postgres } | heroku | mssql | redis | cassandra | bypass
-  <tool>        shell | uri
+  <spec>        mongo | { redshift | postgres } | mssql | redis | cassandra | astra | bypass
+  <tool>        shell | uri | unload | load
   <dsn-token>   token from DSN conf
 
 Options (DSN overrides):
@@ -58,12 +58,12 @@ SPEC="$1"; shift
 # shell - runs a cli shell/tool for the dbms specified by $SPEC
 # uri - outputs connection strings in a format specified by $FORMAT
 TOOL="$1"; shift
-FORMAT='-'
+FORMAT=''
 # name of the token to read the connection attributes from
 NAME="$1"; shift
 
 # read all the optional arguments
-ARGS=`getopt --name 'database-tool' --options 'asc' --longoptions database: -- "$@"`
+ARGS=`getopt --name 'database-tool' --options 'asc' --longoptions database,format: -- "$@"`
 eval set -- "$ARGS"
 
 # parameters can be overridden
@@ -72,63 +72,58 @@ do
   case "$1" in
     --database)
         case "$2" in
-          "") shift 2 ;;
+          '') shift 2 ;;
           *) _map[database]="$2"; shift 2 ;;
         esac ;;
     --format)
         case "$2" in
-          "") shift 2 ;;
+          '') shift 2 ;;
           *) FORMAT="$2"; shift 2 ;;
         esac ;;
     --) shift; break ;;
-    *) echo "error parsing args"; exit 1
+    *) echo 'error parsing args'; exit 1
   esac
 done
 
 # validate all positional arguments
 case $SPEC in
-  "bypass")
+  'bypass')
     case "$FORMAT" in
-      - | -- | default) ;;
+      '' | - | -- | default) ;;
       *) error "'$FORMAT' output format is not supported"; exit 1
     esac
     ;;
-  "mongo")
+  'mongo')
     case "$FORMAT" in
-      - | -- | default) ;;
+      '' | - | -- | default) ;;
       *) error "'$FORMAT' output format is not supported"; exit 1
     esac
     ;;
-  "redshift" | "postgres")
+  'redshift' | 'postgres')
     case "$FORMAT" in
-      csv | psycopg | - | -- | default) ;;
+      '' | csv | psycopg | - | -- | default) ;;
       *) error "'$FORMAT' format is not supported"; exit 1
     esac
     ;;
-  "heroku")
+  'mssql')
+    ;;
+  'redis')
     case "$FORMAT" in
-      - | -- | default) ;;
+      '' | - | -- | default) ;;
       *) error "'$FORMAT' format is not supported"; exit 1
     esac
     ;;
-  "mssql")
-    ;;
-  "redis")
+  'cassandra' | 'astra')
     case "$FORMAT" in
-      - | -- | default) ;;
-      *) error "'$FORMAT' format is not supported"; exit 1
-    esac
-    ;;
-  "cassandra")
-    case "$FORMAT" in
-      - | -- | default) ;;
+      '' | json | csv | - | -- | default) ;;
       *) error "'$FORMAT' format is not supported"; exit 1
     esac
     ;;
   *) error "'$SPEC' spec is not supported"; exit 1
 esac
+
 case $TOOL in
-  "shell" | "uri") ;;
+  'shell' | 'uri' | 'unload' | 'load') ;;
   *) error "'$TOOL' is not a valid argument"; exit 1
 esac
 
@@ -136,11 +131,21 @@ _scope="$SPEC"
 
 # read database connection attributes into a map
 declare -A _map
-for FIELD in host port database username password app connect-timeout secure-bundle
+for FIELD in host port database username password passkey app connect-timeout secure-bundle
 do
   _key="$(echo "$FIELD" | sed 's/-/_/g')"
   _map[$_key]="$(yq e ".$_scope.$NAME.$FIELD" "$_dsn_conf_path")"
 done
+
+# use keyring if passkey is specified
+if [[ "${_map[username]}" == 'null' ]]
+then
+  _map[username]="$(secret-tool lookup "d6:$_scope.$NAME" 'username')"
+fi
+if [[ "${_map[password]}" == 'null' ]]
+then
+  _map[password]="$(secret-tool lookup "d6:$_scope.$NAME" 'password')"
+fi
 
 # make sure there is no 'null' value returned by `yq`
 # in case the attribute could not be found
@@ -176,10 +181,10 @@ case $SPEC in
     esac
     ;;
 
-  "redshift" | "postgres")
+  'redshift' | 'postgres')
 
     case $TOOL in
-      "shell")
+      'shell')
         _psql_params=
         _csv_params='--no-align --field-separator "," --pset footer'
 
@@ -190,7 +195,7 @@ case $SPEC in
 
         PGPASSWORD="${_map[password]}" psql ${_psql_params} -h ${_map[host]} -U ${_map[username]} -d ${_map[database]} -p ${_map[port]} --quiet
         ;;
-      "uri")
+      'uri')
         case "$FORMAT" in
           psycopg)
             echo "host='${_map[host]}' port=${_map[port]} dbname='${_map[database]}' user='${_map[username]}' password='${_map[password]}'"
@@ -202,55 +207,65 @@ case $SPEC in
     esac
     ;;
 
-  "heroku")
-
-    case $TOOL in
-      "shell")
-        _heroku_params=
-
-        case "$FORMAT" in
-          - | -- | default) ;;
-        esac
-        heroku pg:psql ${_map[database]} --app ${_map[app]}
-        ;;
-    esac
-    ;;
-
   "mssql")
 
     case $TOOL in
-      "shell")
+      'shell')
         $(isql '$NAME' '${_map[username]}' '${_map[password]}')
         ;;
-      "uri")
+      'uri')
         error "$SPEC $TOOL not supported" ;;
     esac
     ;;
 
-  "redis")
+  'redis')
 
     case $TOOL in
-      "shell")
+      'shell')
         redis-cli -u "redis://${_map[username]}:${_map[password]}@${_map[host]}:${_map[port]}"
         ;;
-      "uri")
+      'uri')
         error "$SPEC $TOOL not supported" ;;
     esac
     ;;
 
-  "cassandra")
+  'cassandra' | 'astra')
 
     case $TOOL in
-      "shell")
+      'shell')
         if [[ -z "${_map[secure_bundle]}" ]]
         then
           cqlsh -u "${_map[username]}" -p "${_map[password]}" --connect-timeout="${_map[connect_timeout]:-10}" "${_map[host]}" "${_map[port]}"
         else
           cqlsh -u "${_map[username]}" -p "${_map[password]}" -b "${_map[secure_bundle]}" --connect-timeout="${_map[connect_timeout]:-10}" --request-timeout=6000 --no-color
-          # echo "cqlsh -u "${_map[username]}" -p "${_map[password]}" -b "${_map[secure_bundle]}" --connect-timeout="${_map[connect_timeout]:-10}" --request-timeout=600 --no-color"
         fi
         ;;
-      "uri")
+
+      'unload')
+        output_format="${FORMAT:-json}"
+        if [[ -z "$DSBULK_KEYSPACE" ]]
+        then
+          unset lines
+          readarray lines < <(cat -)
+          q=
+          for i in ${!lines[@]}; do
+              q="$q ${lines[i]}"
+          done
+          query=$(echo "$q" | tr '\n' ' ')
+          dsbulk unload -query "$query" -u "${_map[username]}" -p "${_map[password]}" -b "${_map[secure_bundle]}" --connect-timeout=20 --request-timeout=6000 -c "$output_format"
+        else
+          dsbulk unload -k "${DSBULK_KEYSPACE}" -t "${DSBULK_TABLE}" -delim '\t' -u "${_map[username]}" -p "${_map[password]}" -b "${_map[secure_bundle]}" --connect-timeout=20 --request-timeout=6000 -c "$output_format"
+        fi
+        ;;
+
+      'load')
+        output_format="${FORMAT:-json}"
+        echo "secure-bundle: ${_map[secure_bundle]}"
+        dsbulk load -k "${DSBULK_KEYSPACE}" -t "${DSBULK_TABLE}" -delim '\t' -u "${_map[username]}" -p "${_map[password]}" -b "${_map[secure_bundle]}" --connect-timeout=20 --request-timeout=6000 -c "$output_format"
+        # echo "-k ${DSBULK_KEYSPACE} -t ${DSBULK_TABLE} -delim '\t' -u ${_map[username]} -p ${_map[password]} -b ${_map[secure_bundle]} --connect-timeout=20 --request-timeout=6000 -c $output_format"
+        ;;
+
+      'uri')
         error "$SPEC $TOOL not supported" ;;
     esac
     ;;
